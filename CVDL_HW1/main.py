@@ -1,5 +1,4 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog
-from PyQt5.QtGui import QPixmap
 from ui import Ui_MainWindow
 
 import sys
@@ -23,6 +22,7 @@ class main(QMainWindow):
         self.ui.pushButton1_4.clicked.connect(self.find_distortion)
         self.ui.pushButton1_5.clicked.connect(self.show_undistorted)
         self.ui.pushButton2_1.clicked.connect(self.show_words_on_board)
+        self.ui.pushButton2_2.clicked.connect(self.show_words_vertically)
         self.ui.pushButton3_1.clicked.connect(self.stereo_disparity_map)
         self.ui.pushButton4_1.clicked.connect(self.load_image_1)
         self.ui.pushButton4_2.clicked.connect(self.load_image_2)
@@ -228,67 +228,250 @@ class main(QMainWindow):
         plt.show()
 
     def show_words_on_board(self):
-        if not hasattr(self, 'ins') or not hasattr(self, 'dist') or not hasattr(self, 'rvecs') or not hasattr(self, 'tvecs'):
-            print("Please calibrate camera first!")
-            return
-        
         if self.folder_path is None:
             print("Please load folder first!")
             return
 
-        text = self.ui.textEdit.toPlainText().upper()
-        if not text or len(text) > 6:
+        if not hasattr(self, 'ins') or not hasattr(self, 'dist') or not hasattr(self, 'rvecs') or not hasattr(self, 'tvecs'):
+            print("Calibrating camera...")
+            
+            self.objpoints = []
+            self.imgpoints = []
+            
+            image_files = sorted([f for f in os.listdir(self.folder_path) if f.endswith('.bmp')])
+            for image_file in image_files:
+                image_path = os.path.join(self.folder_path, image_file)
+                img = cv2.imread(image_path)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                
+                ret, corners = cv2.findChessboardCorners(gray, (self.width, self.height), None)
+                if ret:
+                    self.objpoints.append(self.objp)
+                    corners2 = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), self.criteria)
+                    self.imgpoints.append(corners2)
+            
+            img_size = (2048, 2048)
+            ret, self.ins, self.dist, self.rvecs, self.tvecs = cv2.calibrateCamera(
+                self.objpoints, 
+                self.imgpoints, 
+                img_size, 
+                None, 
+                None
+            )
+            print("Camera calibration completed.")
+
+        input_text = self.ui.textEdit.toPlainText().upper()
+        if not input_text or len(input_text) > 6:
             print("Please input 1-6 characters!")
             return
 
-        # TODO: Cannot open database which is read mode
-        db_path = os.path.join('Dataset_CvDl_Hw1', 'Q2_Image', 'Q2_db', 'alphabet_db_onboard.txt')
-        fs = cv2.FileStorage(db_path, cv2.FILE_STORAGE_READ)
-        
-        image_files = sorted([f for f in os.listdir(self.folder_path) if f.endswith('.bmp')])
-        
-        for idx, image_file in enumerate(image_files):
-            img_path = os.path.join(self.folder_path, image_file)
-            img = cv2.imread(img_path)
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(script_dir, 'Dataset_CvDl_Hw1', 'Q2_Image', 'Q2_db', 'alphabet_db_onboard.txt')
             
-            x_offset = 0
-            for char in text:
-                char_node = fs.getNode(char)
-                if char_node.empty():
-                    print(f"Character {char} not found in database!")
+            print(f"Reading database file: {db_path}")
+            
+            fs = cv2.FileStorage(db_path, cv2.FILE_STORAGE_READ)
+            if not fs.isOpened():
+                print("Failed to open database file.")
+                return
+
+            predefined_positions = [
+                (8, 5, 0),
+                (5, 5, 0),
+                (2, 5, 0),
+                (8, 2, 0),
+                (5, 2, 0),
+                (2, 2, 0)
+            ]
+            
+            image_files = sorted([f for f in os.listdir(self.folder_path) if f.endswith('.bmp')])
+            
+            for idx, image_file in enumerate(image_files):
+                img_path = os.path.join(self.folder_path, image_file)
+                img = cv2.imread(img_path)
+                if img is None:
+                    print(f"Cannot read image {image_file}")
                     continue
                 
-                char_points = char_node.mat()
-                
-                moved_points = char_points.copy()
-                moved_points[:, 0] += x_offset
-                
-                points_2d, _ = cv2.projectPoints(
-                    moved_points,
-                    self.rvecs[idx],
-                    self.tvecs[idx],
-                    self.ins,
-                    self.dist
-                )
+                img_copy = img.copy()
 
-                points_2d = points_2d.astype(numpy.int32)
-                for i in range(0, len(points_2d), 2):
-                    pt1 = tuple(points_2d[i][0])
-                    pt2 = tuple(points_2d[i+1][0])
-                    cv2.line(img, pt1, pt2, (0, 0, 255), 2)
+                for i, letter in enumerate(input_text):
+                    char_node = fs.getNode(letter)
+                    if char_node.empty():
+                        print(f"Character {letter} not found in database")
+                        continue
+                    
+                    try:
+                        char_points = char_node.mat()
+                        if char_points is None:
+                            continue
+                            
+                        char_points = char_points.reshape(-1, 3).astype(numpy.float64)
+                        scale = 0.02
+                        char_points *= scale
+                        
+                        char_points += numpy.array(predefined_positions[i]) * 0.02
+                        
+                        points_2d, _ = cv2.projectPoints(
+                            char_points,
+                            self.rvecs[idx],
+                            self.tvecs[idx],
+                            self.ins,
+                            self.dist
+                        )
+                        
+                        for j in range(0, len(points_2d)-1, 2):
+                            pt1 = tuple(points_2d[j][0].astype(int))
+                            pt2 = tuple(points_2d[j+1][0].astype(int))
+                            cv2.line(img_copy, pt1, pt2, (0, 0, 255), 3)
+                            
+                    except Exception as e:
+                        print(f"Error processing character {letter}: {str(e)}")
+                        continue
                 
-                x_offset += 1
+                try:
+                    scale_percent = 40
+                    width = int(img_copy.shape[1] * scale_percent / 100)
+                    height = int(img_copy.shape[0] * scale_percent / 100)
+                    resized_img = cv2.resize(img_copy, (width, height), interpolation=cv2.INTER_AREA)
+                    
+                    cv2.imshow(f'Image {idx + 1}', resized_img)
+                    cv2.waitKey(0)
+                    cv2.destroyWindow(f'Image {idx + 1}')
+                    
+                except Exception as e:
+                    print(f"Error displaying image: {str(e)}")
             
-            scale_percent = 40
-            width = int(img.shape[1] * scale_percent / 100)
-            height = int(img.shape[0] * scale_percent / 100)
-            resized_img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+        except Exception as e:
+            print(f"Error: {str(e)}")
             
-            cv2.imshow(f'Image {idx + 1}', resized_img)
-            cv2.waitKey(1000)
-            cv2.destroyWindow(f'Image {idx + 1}')
-        
-        fs.release()
+        finally:
+            if 'fs' in locals():
+                fs.release()
+
+    def show_words_vertically(self):
+        if self.folder_path is None:
+            print("Please load folder first!")
+            return
+
+        if not hasattr(self, 'ins') or not hasattr(self, 'dist') or not hasattr(self, 'rvecs') or not hasattr(self, 'tvecs'):
+            print("Calibrating camera...")
+            
+            self.objpoints = []
+            self.imgpoints = []
+            
+            image_files = sorted([f for f in os.listdir(self.folder_path) if f.endswith('.bmp')])
+            for image_file in image_files:
+                image_path = os.path.join(self.folder_path, image_file)
+                img = cv2.imread(image_path)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                
+                ret, corners = cv2.findChessboardCorners(gray, (self.width, self.height), None)
+                if ret:
+                    self.objpoints.append(self.objp)
+                    corners2 = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), self.criteria)
+                    self.imgpoints.append(corners2)
+            
+            img_size = (2048, 2048)
+            ret, self.ins, self.dist, self.rvecs, self.tvecs = cv2.calibrateCamera(
+                self.objpoints, 
+                self.imgpoints, 
+                img_size, 
+                None, 
+                None
+            )
+            print("Camera calibration completed.")
+
+        input_text = self.ui.textEdit.toPlainText().upper()
+        if not input_text or len(input_text) > 6:
+            print("Please input 1-6 characters!")
+            return
+
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(script_dir, 'Dataset_CvDl_Hw1', 'Q2_Image', 'Q2_db', 'alphabet_db_vertical.txt')
+            
+            print(f"Reading database file: {db_path}")
+            
+            fs = cv2.FileStorage(db_path, cv2.FILE_STORAGE_READ)
+            if not fs.isOpened():
+                print("Failed to open database file.")
+                return
+
+            predefined_positions = [
+                (8, 5, 0),
+                (5, 5, 0),
+                (2, 5, 0),
+                (8, 2, 0),
+                (5, 2, 0),
+                (2, 2, 0)
+            ]
+            
+            image_files = sorted([f for f in os.listdir(self.folder_path) if f.endswith('.bmp')])
+            
+            for idx, image_file in enumerate(image_files):
+                img_path = os.path.join(self.folder_path, image_file)
+                img = cv2.imread(img_path)
+                if img is None:
+                    print(f"Cannot read image {image_file}")
+                    continue
+                
+                img_copy = img.copy()
+                
+                for i, letter in enumerate(input_text):
+                    char_node = fs.getNode(letter)
+                    if char_node.empty():
+                        print(f"Character {letter} not found in database")
+                        continue
+                    
+                    try:
+                        char_points = char_node.mat()
+                        if char_points is None:
+                            continue
+                            
+                        char_points = char_points.reshape(-1, 3).astype(numpy.float64)
+                        scale = 0.02
+                        char_points *= scale
+                        
+                        char_points += numpy.array(predefined_positions[i]) * 0.02
+                        
+                        points_2d, _ = cv2.projectPoints(
+                            char_points,
+                            self.rvecs[idx],
+                            self.tvecs[idx],
+                            self.ins,
+                            self.dist
+                        )
+                        
+                        for j in range(0, len(points_2d)-1, 2):
+                            pt1 = tuple(points_2d[j][0].astype(int))
+                            pt2 = tuple(points_2d[j+1][0].astype(int))
+                            cv2.line(img_copy, pt1, pt2, (0, 0, 255), 3)
+                            
+                    except Exception as e:
+                        print(f"Error processing character {letter}: {str(e)}")
+                        continue
+                
+                try:
+                    scale_percent = 40
+                    width = int(img_copy.shape[1] * scale_percent / 100)
+                    height = int(img_copy.shape[0] * scale_percent / 100)
+                    resized_img = cv2.resize(img_copy, (width, height), interpolation=cv2.INTER_AREA)
+                    
+                    cv2.imshow(f'Image {idx + 1}', resized_img)
+                    cv2.waitKey(0)
+                    cv2.destroyWindow(f'Image {idx + 1}')
+                    
+                except Exception as e:
+                    print(f"Error displaying image: {str(e)}")
+            
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            
+        finally:
+            if 'fs' in locals():
+                fs.release()
 
     def stereo_disparity_map(self):
         if self.image_L_path is None or self.image_R_path is None:
