@@ -7,6 +7,7 @@ import numpy
 import cv2
 import matplotlib.pyplot as plt
 
+
 class main(QMainWindow):
     def __init__(self):
         super().__init__()
